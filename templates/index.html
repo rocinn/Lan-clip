@@ -11,7 +11,7 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <!--  App 名称，在用户选择添加到主页的时候这个名字会自动蹦出来 -->
     <meta name="apple-mobile-web-app-title" content="LanClip">
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=18">
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}?v=19">
     <link rel="stylesheet" href="{{ url_for('static', filename='fontawesome/css/all.min.css') }}?v=1">
     <style>
         .btn-block {
@@ -558,10 +558,16 @@
         </div>
 
         <script src="{{ url_for('static', filename='marked.min.js') }}"></script>
-        <script src="{{ url_for('static', filename='main.js') }}?v=24"></script>
+        <script src="{{ url_for('static', filename='main.js') }}?v=25"></script>
 
     </div>
     <div id="notification-container"></div>
+
+    <!-- 有新内容提示（其他设备发送 / 列表结构变化时出现） -->
+    <button id="new-content-pill" type="button" onclick="applyPendingUpdate()" style="display: none;">
+        <i class="fas fa-arrow-up"></i>
+        <span class="new-content-text">有 1 条新内容</span>
+    </button>
 </body>
 
 </html>

@@ -2169,3 +2169,80 @@ body.highlight-mode-active .card-wrapper {
         grid-template-columns: repeat(6, 1fr);
     }
 }
+
+/* ============================================================
+   自动同步：新内容提示条 & 新卡片高亮
+   ============================================================ */
+
+#new-content-pill {
+    position: fixed;
+    left: 50%;
+    bottom: 28px;
+    transform: translateX(-50%) translateY(20px);
+    z-index: 10001;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 18px;
+    border-radius: 22px;
+    border: 1px solid rgba(0, 0, 0, 0.08);
+    background: rgba(255, 255, 255, 0.85);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    color: #1f1f1f;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    -webkit-tap-highlight-color: transparent;
+}
+
+#new-content-pill.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+}
+
+#new-content-pill:hover {
+    background: rgba(255, 255, 255, 0.95);
+}
+
+#new-content-pill i {
+    font-size: 13px;
+}
+
+[data-theme="dark"] #new-content-pill {
+    background: rgba(45, 45, 48, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: #f2f2f7;
+}
+
+[data-theme="dark"] #new-content-pill:hover {
+    background: rgba(60, 60, 64, 0.92);
+}
+
+/* 刚插入的新卡片做一次高亮提示 */
+@keyframes card-fresh-in {
+    0% {
+        box-shadow: 0 0 0 0 rgba(0, 122, 255, 0.55);
+        opacity: 0.35;
+        transform: translateY(-6px);
+    }
+
+    60% {
+        box-shadow: 0 0 0 6px rgba(0, 122, 255, 0.18);
+        opacity: 1;
+        transform: translateY(0);
+    }
+
+    100% {
+        box-shadow: 0 0 0 0 rgba(0, 122, 255, 0);
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.card-wrapper.card-fresh {
+    animation: card-fresh-in 1.2s ease-out;
+}

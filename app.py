@@ -58,6 +58,29 @@ def is_authenticated():
     
     return auth_service.verify_password(password)
 
+# 高频轮询接口用的鉴权缓存：scrypt 校验约需几十毫秒，轮询时没必要每次都算
+_auth_cache = {'pwd': None, 'ok': False, 'ts': 0.0}
+AUTH_CACHE_TTL = 60.0
+
+
+def is_authenticated_cached(ttl=AUTH_CACHE_TTL):
+    """和 is_authenticated() 相同，但结果按密码缓存一小段时间。"""
+    password = request.headers.get('X-Admin-Password')
+    if not password and request.is_json:
+        data = request.get_json(silent=True)
+        if data:
+            password = data.get('password')
+    if not password:
+        password = request.cookies.get('admin_password')
+
+    now = time.time()
+    if _auth_cache['pwd'] == password and now - _auth_cache['ts'] < ttl:
+        return _auth_cache['ok']
+
+    ok = auth_service.verify_password(password)
+    _auth_cache.update({'pwd': password, 'ok': ok, 'ts': now})
+    return ok
+
 def card_matches_query(content, query):
     """Case-insensitive match against raw text and visible text inside HTML cards."""
     if not query:
@@ -490,6 +513,69 @@ def get_cards_api():
         'total': len(filtered_cards),
         'has_restricted': len(cards_cache) > len(get_filtered_cards(cards_cache, force_show_all=False))
     })
+
+@app.route('/api/cards/status', methods=['GET'])
+def cards_status_api():
+    """轻量状态查询：供前端轮询判断是否有新卡片。
+
+    只返回 id / 数量等元信息，不返回卡片内容，因此可以高频调用。
+    未解锁历史内容时，受保护的旧卡片不会泄露任何信息。
+    """
+    ensure_cards_dir()
+    show_old = request.args.get('show_old', 'false').lower() == 'true'
+    unlocked = show_old and is_authenticated_cached()
+
+    now = time.time()
+    three_days_sec = 3 * 24 * 60 * 60
+    pinned_ids = set(load_pinned())
+    latest_id = 0
+    latest_ts = 0.0
+    total = 0
+    visible = 0
+    pinned_visible = 0
+
+    try:
+        for card_file in glob.glob(os.path.join(CARDS_DIR, '*.txt')):
+            name = os.path.splitext(os.path.basename(card_file))[0]
+            try:
+                card_id = int(name)
+            except ValueError:
+                continue
+            try:
+                mtime = os.path.getmtime(card_file)
+            except OSError:
+                continue
+
+            total += 1
+            is_visible = (now - mtime) <= three_days_sec
+            if is_visible:
+                visible += 1
+
+            # 未解锁时，旧内容受权限保护，不参与统计
+            if not unlocked and not is_visible:
+                continue
+
+            if name in pinned_ids:
+                pinned_visible += 1
+            if card_id > latest_id:
+                latest_id = card_id
+                latest_ts = mtime
+    except Exception as e:
+        print(f"读取卡片状态出错: {str(e)}")
+
+    if not unlocked:
+        total = visible
+
+    return jsonify({
+        'latest_id': latest_id,
+        'latest_ts': latest_ts,
+        'total': total,
+        'visible': visible,
+        # 置顶卡片排在列表最前，前端取“最新 N 条”时需要多取这么多条
+        'pinned_count': pinned_visible,
+        'pinned_sig': ','.join(sorted(pinned_ids)) if unlocked else ''
+    })
+
 
 @app.route('/api/pin_card', methods=['POST'])
 def pin_card():

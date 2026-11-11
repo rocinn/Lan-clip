@@ -336,6 +336,9 @@ window.onload = function () {
             }
         }
     });
+
+    // 开启自动同步：其他设备发来的内容自动出现在列表顶部
+    startAutoSync();
 };
 
 // Helper to generate card HTML
@@ -662,9 +665,15 @@ async function loadMoreCards(showOld = false, customSize = null) {
         const data = await response.json();
 
         const container = document.getElementById('card-container');
-        data.cards.forEach(card => {
-            container.insertAdjacentHTML('beforeend', getCardHtml(card));
-        });
+        // 服务端分页会因为新卡片插入而整体后移，这里去重避免重复渲染
+        const existingIds = new Set(
+            Array.from(container.querySelectorAll('.card-wrapper[data-id]')).map(el => el.dataset.id)
+        );
+        data.cards
+            .filter(card => !existingIds.has(String(card.id)))
+            .forEach(card => {
+                container.insertAdjacentHTML('beforeend', getCardHtml(card));
+            });
 
         currentPage++;
         hasMore = data.has_more;
@@ -3347,3 +3356,210 @@ async function importContent(input) {
         showNotification('导入过程中出错，请检查压缩包。', 'error');
     }
 }
+
+// ============================================================================
+// 自动同步：其他设备（手机 / 电脑）发送的内容自动出现在当前页面
+// 后端每 1.5s 巡检一次剪贴板并落盘，这里用轻量状态接口轮询变化，
+// 发现新卡片后直接插入列表顶部，不打断用户当前的浏览位置。
+// ============================================================================
+
+const AUTO_SYNC_INTERVAL = 2000;   // 状态轮询间隔（毫秒）
+let autoSyncTimer = null;
+let autoSyncBusy = false;
+let autoSyncReady = false;        // 是否已经拿到过服务端状态基线
+let knownLatestId = 0;            // 本地已知的新卡片 id（越大越新）
+let knownTotal = -1;              // 本地已知的卡片总数
+let knownPinnedSig = '';
+let pendingUpdateCount = 0;       // 尚未展示的新内容数量
+
+// 从当前 DOM 推断基线（首屏由服务端渲染，包含全部可见卡片）
+function syncKnownStateFromDom() {
+    const container = document.getElementById('card-container');
+    if (!container) return;
+    let maxId = 0;
+    container.querySelectorAll('.card-wrapper[data-id]').forEach(el => {
+        const id = parseInt(el.dataset.id, 10);
+        if (!isNaN(id) && id > maxId) maxId = id;
+    });
+    knownLatestId = maxId;
+}
+
+function startAutoSync() {
+    syncKnownStateFromDom();
+    if (autoSyncTimer) clearInterval(autoSyncTimer);
+    autoSyncTimer = setInterval(pollCardStatus, AUTO_SYNC_INTERVAL);
+    pollCardStatus();
+
+    // 页面重新可见时立刻检查一次（后台标签页的定时器会被浏览器降频）
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) pollCardStatus();
+    });
+}
+
+async function pollCardStatus() {
+    if (autoSyncBusy) return;
+    if (document.hidden) return;   // 后台不轮询，切回前台时再检查
+    autoSyncBusy = true;
+    try {
+        const response = await fetch(`/api/cards/status?show_old=${oldContentLoaded ? 'true' : 'false'}`, {
+            headers: getAuthHeaders(),
+            cache: 'no-store'
+        });
+        if (!response.ok) return;
+        const status = await response.json();
+        await handleCardStatus(status);
+    } catch (error) {
+        // 网络抖动静默忽略，下个周期继续
+    } finally {
+        autoSyncBusy = false;
+    }
+}
+
+async function handleCardStatus(status) {
+    if (!status) return;
+    const latestId = Number(status.latest_id) || 0;
+    const total = Number(status.total) || 0;
+    const pinnedSig = status.pinned_sig || '';
+    const newCount = latestId - knownLatestId;
+    const isFirstCheck = !autoSyncReady;
+    autoSyncReady = true;
+
+    if (newCount > 0) {
+        // 有新卡片
+        const sinceId = knownLatestId;
+        knownLatestId = latestId;
+        knownTotal = total;
+        knownPinnedSig = pinnedSig;
+        if (searchMode || getActiveSearchQuery()) {
+            showNewContentPill(newCount);   // 搜索中不打断当前结果
+            return;
+        }
+        const inserted = await insertNewCards(newCount, sinceId, status);
+        if (!inserted) showNewContentPill(newCount);
+        return;
+    }
+
+    // 首次拿到状态：只建立基线，不弹提示
+    if (isFirstCheck) {
+        knownTotal = total;
+        knownPinnedSig = pinnedSig;
+        knownLatestId = Math.max(knownLatestId, latestId);
+        return;
+    }
+
+    // 置顶状态变化会影响排序，卡片被删除 / 导入覆盖也会改变列表：提示手动刷新
+    if (total !== knownTotal || pinnedSig !== knownPinnedSig) {
+        knownTotal = total;
+        knownPinnedSig = pinnedSig;
+        knownLatestId = Math.max(knownLatestId, latestId);
+        if (!searchMode && !getActiveSearchQuery()) showNewContentPill(0);
+    }
+}
+
+// 拉取最新的 count 条卡片并插入到列表顶部
+async function insertNewCards(count, sinceId, status) {
+    const container = document.getElementById('card-container');
+    if (!container || count <= 0) return false;
+
+    // 置顶卡片排在最前，需要多取 pinned_count 条才能覆盖到真正的新卡片
+    const pinnedCount = Number(status.pinned_count) || 0;
+    const need = Math.min(count + pinnedCount + 1, 200);
+
+    let fresh = [];
+    try {
+        const response = await fetch(`/api/cards?page=1&size=${need}&show_old=${oldContentLoaded ? 'true' : 'false'}`, {
+            headers: getAuthHeaders(),
+            cache: 'no-store'
+        });
+        if (!response.ok) return false;
+        const data = await response.json();
+        const existing = new Set(
+            Array.from(container.querySelectorAll('.card-wrapper[data-id]')).map(el => el.dataset.id)
+        );
+        fresh = (data.cards || [])
+            .filter(c => Number(c.id) > sinceId && !existing.has(String(c.id)))
+            .sort((a, b) => Number(b.id) - Number(a.id));
+    } catch (error) {
+        return false;
+    }
+
+    if (!fresh.length) return false;
+
+    const scrollBefore = window.scrollY;
+    const html = fresh.map(getCardHtml).join('');
+    const anchor = container.querySelector('.card-wrapper');
+    if (anchor) {
+        anchor.insertAdjacentHTML('beforebegin', html);
+    } else {
+        const placeholder = container.querySelector('.grid-new-card');
+        if (placeholder) placeholder.insertAdjacentHTML('afterend', html);
+        else container.insertAdjacentHTML('afterbegin', html);
+    }
+
+    // 高亮一下新卡片，让用户注意到更新
+    fresh.forEach(c => {
+        const el = container.querySelector(`.card-wrapper[data-id="${c.id}"]`);
+        if (el) el.classList.add('card-fresh');
+    });
+    setTimeout(() => {
+        document.querySelectorAll('.card-wrapper.card-fresh').forEach(el => el.classList.remove('card-fresh'));
+    }, 2000);
+
+    // 补偿滚动位置，避免用户正在看的内容被新卡片顶下去
+    if (scrollBefore > 0) {
+        let added = 0;
+        fresh.forEach(c => {
+            const el = container.querySelector(`.card-wrapper[data-id="${c.id}"]`);
+            if (el) added += el.getBoundingClientRect().height;
+        });
+        if (added > 0) window.scrollBy(0, added);
+    }
+
+    // 内容类型筛选开启时，新卡片也要遵循筛选条件
+    if (currentTypeFilter !== 'all') {
+        applyClientCardFilter(getActiveSearchQuery(), false);
+    }
+
+    setTimeout(checkOverflow, 100);
+    return true;
+}
+
+function showNewContentPill(count) {
+    const pill = document.getElementById('new-content-pill');
+    if (!pill) return;
+    const text = pill.querySelector('.new-content-text');
+    if (count > 0) {
+        pendingUpdateCount += count;
+        if (text) text.textContent = `有 ${pendingUpdateCount} 条新内容`;
+    } else {
+        pendingUpdateCount = 0;
+        if (text) text.textContent = '内容有更新';
+    }
+    pill.style.display = 'flex';
+    pill.classList.add('show');
+}
+
+function hideNewContentPill() {
+    const pill = document.getElementById('new-content-pill');
+    if (!pill) return;
+    pill.style.display = 'none';
+    pill.classList.remove('show');
+    pendingUpdateCount = 0;
+}
+
+async function applyPendingUpdate() {
+    hideNewContentPill();
+    try {
+        if (searchMode || getActiveSearchQuery()) {
+            await exitSearchMode();
+        } else {
+            const doRefresh = window.refreshCards || refreshCards;
+            await doRefresh();
+        }
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        syncKnownStateFromDom();
+    } catch (error) {
+        console.error('同步新内容失败:', error);
+    }
+}
+
