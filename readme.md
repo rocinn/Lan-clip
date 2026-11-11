@@ -46,6 +46,19 @@ docker run -d -p 5000:5000 \
 python app.py
 ```
 
+### Linux 本机常驻运行（LoongArch / Loongnix）
+
+本机系统 Python 没有 pip，依赖放在项目内 `.venv`。首次执行 `./setup.sh` 安装依赖，之后：
+
+```
+./start.sh          # 后台启动（默认 5000）
+./start.sh status   # 查看状态与局域网访问地址
+./start.sh enable   # 安装 systemd 用户级开机自启
+./stop.sh           # 停止服务
+```
+
+详见 [docs/deploy-linux-loongarch.md](docs/deploy-linux-loongarch.md)。
+
 ## tray模式
 现在不仅仅可以手工添加，它还可以自动的监听剪贴板内容，并且把它们都存储起来，以供后续使用。
 只需要在启动的时候使用命令。

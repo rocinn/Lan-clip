@@ -1,5 +1,17 @@
 # Release Notes
 
+## 2026-11-11
+
+- 新增: `start.sh` / `stop.sh` / `setup.sh`，支持后台常驻、状态查看、systemd 用户级开机自启
+- 新增: 跨设备自动同步，其他设备发送的新内容自动插入列表并高亮，搜索态显示「有新内容」提示条
+- 适配: LoongArch / Loongnix 本机环境，依赖安装到项目 `.venv`，兼容没有 pip/ensurepip 的系统 Python
+- 修复: `/etc/hosts` 把主机名指向 `127.0.1.1` 时只显示回环地址，改用 `hostname -I` 获取真实网卡地址
+- 修复: 只展示实际监听的 IPv4 地址，避免列出 Waitress 未绑定的 IPv6 地址
+- 修复: 放行 firewalld 的 5000/tcp，局域网设备才能访问（本机默认 public zone 只放行 ssh）
+- 修复: 已 enable systemd 时 `./start.sh 5080` 会同步重写单元端口并重启，避免状态与实际端口错位
+- 改进: 状态检查区分 firewalld「当前未放行」和「未持久化，重启后失效」
+- 文档: 新增 `docs/deploy-linux-loongarch.md` 本机部署说明
+
 ## v1.7.1 - 2026-07-08
 
 - Fix: macOS AppKit Dock 图标隐藏仅在 macOS 环境运行，不干扰其他平台

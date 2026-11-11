@@ -19,8 +19,22 @@ set -u
 
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PORT="${LANCLIP_PORT:-5000}"
-PYTHON="${LANCLIP_PYTHON:-python3}"
 UNIT_NAME="lanclip"
+USER_UNIT_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/${UNIT_NAME}.service"
+
+# 与 start.sh 保持一致：优先项目内 .venv（本机系统 Python 没有 flask/依赖）
+if [ -n "${LANCLIP_PYTHON:-}" ]; then
+    PYTHON="$LANCLIP_PYTHON"
+elif [ -x "$APP_DIR/.venv/bin/python" ]; then
+    PYTHON="$APP_DIR/.venv/bin/python"
+else
+    PYTHON="python3"
+fi
+
+case "$PYTHON" in
+    /*) ;;
+    *) PYTHON="$(command -v "$PYTHON" 2>/dev/null || printf '%s' "$PYTHON")" ;;
+esac
 
 RUN_DIR="$APP_DIR/run"
 PID_FILE="$RUN_DIR/lanclip.pid"
@@ -34,8 +48,18 @@ c_grn() { printf '\033[32m%s\033[0m\n' "$*"; }
 c_yel() { printf '\033[33m%s\033[0m\n' "$*"; }
 c_blu() { printf '\033[34m%s\033[0m\n' "$*"; }
 
+PORT_EXPLICIT=0
+[ -n "${LANCLIP_PORT:-}" ] && PORT_EXPLICIT=1
+
 if [ $# -gt 0 ] && [[ "${1:-}" =~ ^[0-9]+$ ]]; then
     PORT="$1"
+    PORT_EXPLICIT=1
+fi
+
+# 未显式指定端口时，沿用 systemd 单元里配置的端口，保证停止后的端口检查准确
+if [ "$PORT_EXPLICIT" = "0" ] && [ -f "$USER_UNIT_FILE" ]; then
+    configured_port="$(sed -n 's/.*--port[= ][[:space:]]*\([0-9][0-9]*\).*/\1/p' "$USER_UNIT_FILE" | head -n1)"
+    [ -n "${configured_port:-}" ] && PORT="$configured_port"
 fi
 
 port_busy() {

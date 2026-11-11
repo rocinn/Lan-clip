@@ -1,7 +1,43 @@
 import socket
+import subprocess
+import sys
+
 import qrcode
 
-def get_host_ips():
+
+def _iter_local_addresses():
+    """逐个产出本机地址 (family, addr)。
+
+    Linux 上优先使用 `hostname -I`：部分发行版（含 Loongnix）把主机名映射到
+    /etc/hosts 的 127.0.1.1，此时 getaddrinfo(hostname) 只能拿到回环地址，
+    终端里就只剩 127.0.0.1，局域网地址和二维码都显示不出来。
+    """
+    if sys.platform.startswith('linux'):
+        try:
+            result = subprocess.run(
+                ['hostname', '-I'],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+            addrs = result.stdout.split() if result.returncode == 0 else []
+            if addrs:
+                for addr in addrs:
+                    family = socket.AF_INET6 if ':' in addr else socket.AF_INET
+                    yield family, addr
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+
+    try:
+        for item in socket.getaddrinfo(socket.gethostname(), None):
+            yield item[0], item[4][0]
+    except OSError:
+        return
+
+
+def get_host_ips(include_ipv6=True):
     """获取本机所有的物理网卡内网 IPv4 和 IPv6 地址"""
     ips = []
     try:
@@ -16,9 +52,6 @@ def get_host_ips():
         finally:
             s.close()
 
-        hostname = socket.gethostname()
-        addr_info = socket.getaddrinfo(hostname, None)
-        
         seen = set()
         
         # 排除列表：常见的虚拟网卡、代理、回环段、无效的前缀
@@ -30,10 +63,10 @@ def get_host_ips():
         # 用户提到的特定虚拟网段
         exclude_specific = ('192.168.206.', '192.168.56.', '192.168.163.', '192.168.44.')
 
-        for item in addr_info:
-            family = item[0]
-            addr = item[4][0]
-            
+        for family, raw_addr in _iter_local_addresses():
+            # IPv6 可能带 scope（如 fe80::1%eth0），先去掉再过滤
+            addr = raw_addr.split('%', 1)[0]
+
             # 基础过滤
             if any(addr.startswith(p) for p in exclude_prefixes):
                 continue
@@ -44,20 +77,22 @@ def get_host_ips():
                 if addr != primary_ip:
                     continue
 
-            if addr not in seen:
-                if family == socket.AF_INET:
-                    # 将 primary_ip 放在列表最前面
-                    if addr == primary_ip:
-                        ips.insert(0, (addr, "IPv4"))
-                    else:
-                        ips.append((addr, "IPv4"))
+            if addr in seen:
+                continue
+
+            if family == socket.AF_INET:
+                # 将 primary_ip 放在列表最前面
+                if addr == primary_ip:
+                    ips.insert(0, (addr, "IPv4"))
+                else:
+                    ips.append((addr, "IPv4"))
+                seen.add(addr)
+            elif include_ipv6 and hasattr(socket, 'AF_INET6') and family == socket.AF_INET6:
+                # 仅保留可能是公网/全局的 IPv6 (通常以 2 或 3 开头)
+                # 如果 IPv6 无法连接，用户反馈连不上，这里可以做更严格的筛选
+                if addr.startswith('2') or addr.startswith('3'):
+                    ips.append((addr, "IPv6"))
                     seen.add(addr)
-                elif hasattr(socket, 'AF_INET6') and family == socket.AF_INET6:
-                    # 仅保留可能是公网/全局的 IPv6 (通常以 2 或 3 开头)
-                    # 如果 IPv6 无法连接，用户反馈连不上，这里可以做更严格的筛选
-                    if addr.startswith('2') or addr.startswith('3'):
-                        ips.append((addr, "IPv6"))
-                        seen.add(addr)
                     
     except Exception as e:
         print(f"获取 IP 地址时出错: {e}")
@@ -70,7 +105,8 @@ def get_host_ips():
 
 def display_server_info(port):
     """在终端显示访问地址和二维码"""
-    ips = get_host_ips()
+    # 服务端 Waitress 目前绑定 0.0.0.0（仅 IPv4），展示 IPv6 地址会误导用户
+    ips = get_host_ips(include_ipv6=False)
     
     print("\n" + "╔" + "═"*60 + "╗")
     print(f"║  Lan-clip 服务已启动，监听端口: {port:<31} ║")
